@@ -1,6 +1,7 @@
+import os
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Literal, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +25,9 @@ def read_results(results_file: Path) -> pd.DataFrame:
         data = []
         for l in f.readlines()[1:]:
             line = re.split(r"\t+", l)
+            # Remove the 'K' column for the general model
+            if len(line) == 10:
+                line = line[:4] + line[5:]
             for i, v in enumerate(line):
                 line[i] = v.strip()
             data.append(line)
@@ -105,14 +109,13 @@ def get_performance_profiles(
 
 
 def plot_performance_profiles(data: Dict[str, dict]) -> None:
-
     """
     Plots the performance profiles for a given dictionary of data.
 
     Parameters:
-        data (Dict[str, dict]): A dictionary where the keys represent the names of the 
+        data (Dict[str, dict]): A dictionary where the keys represent the names of the
             performance profiles, and the values are dictionaries containing performance profile data.
-    
+
     Returns:
         None
     """
@@ -137,14 +140,65 @@ def plot_performance_profiles(data: Dict[str, dict]) -> None:
     fig.savefig("performance_profile.pdf", format="pdf")
 
 
+def aggregate_results(
+    results: Dict[str, pd.DataFrame], parameter: Literal["Gamma", "Delta"], value: int
+):
+
+    # Filter results for each method by given value for given parameter.
+    filtered_results = {}
+    for m, data in results.items():
+        filtered_results[m] = data[data[parameter] == value]
+
+    # Compute best found solution across all solution methods
+    objvals = {m: data["objval"].tolist() for m, data in filtered_results.items()}
+    min_objval = [min(objval) for objval in zip(*objvals.values())]
+
+    # Format runtimes
+    for m, data in filtered_results.items():
+        data_copy = data.copy()
+        data_copy.loc[data["runtime"] == 0.00, "runtime"] = 0.01
+        data_copy.loc[data["runtime"] > 600, "runtime"] = 600
+        data_copy["solved"] = (data["status"] == 2).astype(int)
+        data_copy["LBgap"] = np.where(
+            data["status"] != 2, (min_objval - data["objbound"]) * 100 / min_objval, 0
+        )
+        data_copy["UBgap"] = np.where(
+            data["status"] != 2, (data["objval"] - min_objval) * 100 / data["objval"], 0
+        )
+        filtered_results[m] = data_copy
+        print(filtered_results[m])
+
+    aggregate_results = {}
+    for m, data in filtered_results.items():
+        aggregate_results[m] = (
+            data.groupby(["n", "Gamma", "Delta"])
+            .agg({"runtime": "mean", "LBgap": "mean", "UBgap": "mean", "solved": "sum"})
+            .round(1)
+        )
+        print(aggregate_results[m])
+
+    for m, df in aggregate_results.items():
+        output_dir = Path(Path.cwd() / f"../results/aggregate_by_{parameter}")
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.join(
+            output_dir,
+            f"{m}_aggregate_results.csv",
+        )
+        # Save the DataFrame to a CSV file
+        df.to_csv(filename)
+
+
 if __name__ == "__main__":
 
+    general = read_results(Path(Path.cwd() / "../results/general_results.txt"))
+    general_ws = read_results(Path(Path.cwd() / "../results/general_ws_results.txt"))
     assignment = read_results(Path(Path.cwd() / "../results/assignment_results.txt"))
     assignment_ws = read_results(
         Path(Path.cwd() / "../results/assignment_ws_results.txt")
     )
     matching = read_results(Path(Path.cwd() / "../results/matching_results.txt"))
     matching_ws = read_results(Path(Path.cwd() / "../results/matching_ws_results.txt"))
+
     pp = get_performance_profiles(
         {
             "assignment": assignment,
@@ -155,3 +209,4 @@ if __name__ == "__main__":
         [10, 15, 20],
     )
     plot_performance_profiles(pp)
+
